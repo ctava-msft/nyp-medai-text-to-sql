@@ -14,7 +14,7 @@ This project provides a natural language interface to query medical triplet data
 ## Files
 
 - `medical_data.csv` - The medical triplet data in CSV format
-- `natural_language_to_sql.py` - Main Python script for natural language to SQL conversion
+- `run.py` - Main Python script for natural language to SQL conversion
 - `requirements.txt` - Python dependencies
 - `.env.template` - Environment configuration template
 
