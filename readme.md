@@ -59,7 +59,7 @@ Ensure your Azure OpenAI resource has:
 ### Run the Script
 
 ```powershell
-python natural_language_to_sql.py
+python run.py
 ```
 
 ### Example Queries

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 def test_csv_and_database():
     """Test loading CSV data and basic SQL operations."""
     
-    csv_file = "medical_data.csv"
+    csv_file = "./data/medical_data.csv"
     
     try:
         # Load CSV data

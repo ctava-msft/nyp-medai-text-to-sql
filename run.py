@@ -1,61 +1,66 @@
 """
-Natural Language to SQL Query Converter using Azure OpenAI GPT-4
-This script converts English text to SQL queries for the medical triplets database.
+Natural Language to SQL Query Converter using Azure OpenAI
+Combines working Azure OpenAI authentication with SQLite database functionality.
 """
 
 import os
 import pandas as pd
 import sqlite3
 import logging
-from typing import Optional, Dict, Any
-from azure.identity import DefaultAzureCredential, AzureCliCredential
-from azure.keyvault.secrets import SecretClient
-from openai import AzureOpenAI
-import json
+import requests
 import re
+import random
+from typing import Dict, Any
+from azure.identity import InteractiveBrowserCredential
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+load_dotenv()
+
 class MedicalDataQueryProcessor:
     """
     Processes natural language queries and converts them to SQL for medical triplet data.
-    Uses Azure OpenAI GPT-4 for natural language understanding and SQL generation.
+    Uses Azure OpenAI for natural language understanding and SQL generation.
     """
     
-    def __init__(self, csv_file_path: str, azure_openai_endpoint: str, 
-                 api_version: str = "2024-05-01-preview", 
-                 deployment_name: str = "gpt-4", 
-                 key_vault_url: Optional[str] = None):
+    def __init__(self, csv_file_path: str):
         """
         Initialize the query processor.
         
         Args:
             csv_file_path: Path to the medical data CSV file
-            azure_openai_endpoint: Azure OpenAI service endpoint
-            api_version: Azure OpenAI API version
-            deployment_name: Name of the GPT-4 deployment
-            key_vault_url: Optional Key Vault URL for storing API keys
         """
         self.csv_file_path = csv_file_path
-        self.azure_openai_endpoint = azure_openai_endpoint
-        self.api_version = api_version
-        self.deployment_name = deployment_name
-        self.key_vault_url = key_vault_url
         
-        # Initialize credentials using managed identity
-        self.credential = DefaultAzureCredential()
+        # Validate required environment variables
+        self.required_vars = [
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_OPENAI_API_VERSION", 
+            "AZURE_OPENAI_DEPLOYMENT_NAME",
+            "AZURE_TENANT_ID"
+        ]
+        
+        self._validate_environment()
         
         # Initialize database
         self.db_path = ":memory:"  # In-memory SQLite database
         self.conn = None
         
-        # Initialize Azure OpenAI client
-        self.openai_client = None
+        # Initialize Azure authentication
+        self.access_token = None
         
         self._setup_database()
-        self._setup_azure_openai()
+        self._setup_azure_auth()
+    
+    def _validate_environment(self) -> None:
+        """Validate that all required environment variables are set."""
+        for var in self.required_vars:
+            if not os.getenv(var):
+                logger.error(f"Missing required environment variable: {var}")
+                raise ValueError(f"Missing required environment variable: {var}")
     
     def _setup_database(self) -> None:
         """Set up SQLite database and load CSV data."""
@@ -81,44 +86,18 @@ class MedicalDataQueryProcessor:
             logger.error(f"Error setting up database: {e}")
             raise
     
-    def _setup_azure_openai(self) -> None:
-        """Set up Azure OpenAI client with managed identity authentication."""
+    def _setup_azure_auth(self) -> None:
+        """Set up Azure authentication using InteractiveBrowserCredential."""
         try:
-            if self.key_vault_url:
-                # Get API key from Key Vault
-                secret_client = SecretClient(vault_url=self.key_vault_url, credential=self.credential)
-                api_key = secret_client.get_secret("azure-openai-api-key").value
-                
-                self.openai_client = AzureOpenAI(
-                    azure_endpoint=self.azure_openai_endpoint,
-                    api_key=api_key,
-                    api_version=self.api_version
-                )
-            else:
-                # Use managed identity for authentication
-                # Get token for Azure OpenAI
-                token = self.credential.get_token("https://cognitiveservices.azure.com/.default")
-                
-                self.openai_client = AzureOpenAI(
-                    azure_endpoint=self.azure_openai_endpoint,
-                    azure_ad_token=token.token,
-                    api_version=self.api_version
-                )
-            
-            logger.info("Azure OpenAI client initialized successfully")
+            tenant_id = os.getenv("AZURE_TENANT_ID")
+            credential = InteractiveBrowserCredential(tenant_id=tenant_id)
+            scope = "https://cognitiveservices.azure.com/.default"
+            self.access_token = credential.get_token(scope)
+            logger.info("Authentication successful!")
             
         except Exception as e:
-            logger.error(f"Error setting up Azure OpenAI: {e}")
+            logger.error(f"Error setting up Azure authentication: {e}")
             raise
-    
-    def _refresh_token_if_needed(self) -> None:
-        """Refresh Azure AD token if using managed identity."""
-        if not self.key_vault_url:
-            try:
-                token = self.credential.get_token("https://cognitiveservices.azure.com/.default")
-                self.openai_client.azure_ad_token = token.token
-            except Exception as e:
-                logger.warning(f"Failed to refresh token: {e}")
     
     def get_database_schema(self) -> str:
         """Get the database schema as a string for the AI prompt."""
@@ -148,9 +127,49 @@ class MedicalDataQueryProcessor:
         
         return schema_description
     
+    def query_azure_openai(self, prompt: str) -> str:
+        """
+        Query Azure OpenAI with the given prompt.
+        
+        Args:
+            prompt: The prompt to send to Azure OpenAI
+            
+        Returns:
+            The response from Azure OpenAI
+        """
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.access_token.token}"
+        }
+        
+        payload = {
+            "messages": [
+                {"role": "system", "content": prompt}
+            ],
+            "max_tokens": 500,
+            "temperature": 0.1,
+            "frequency_penalty": 0,
+            "presence_penalty": 0,
+            "top_p": 0.90,
+            "stop": None
+        }
+        
+        try:
+            response = requests.post(
+                f"{os.getenv('AZURE_OPENAI_ENDPOINT')}/openai/deployments/{os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')}/chat/completions?api-version={os.getenv('AZURE_OPENAI_API_VERSION')}",
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+            return response.json()['choices'][0]['message']['content']
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error querying Azure OpenAI: {e.response.text if e.response else e}")
+            raise
+    
     def generate_sql_query(self, natural_language_query: str) -> str:
         """
-        Convert natural language query to SQL using Azure OpenAI GPT-4.
+        Convert natural language query to SQL using Azure OpenAI.
         
         Args:
             natural_language_query: The user's question in natural language
@@ -167,7 +186,7 @@ class MedicalDataQueryProcessor:
         Rules:
         1. Only generate SELECT statements
         2. Use proper SQL syntax for SQLite
-        3. Return only the SQL query, no explanations
+        3. Return only the SQL query, no explanations or markdown formatting
         4. Handle text matching with LIKE for partial matches
         5. Use proper quoting for text values
         6. Consider case-insensitive matching where appropriate
@@ -176,27 +195,14 @@ class MedicalDataQueryProcessor:
         - "Find all records for MEDCode X" -> SELECT * FROM medical_data WHERE MEDCode = X
         - "Show measurements containing 'sodium'" -> SELECT * FROM medical_data WHERE Value LIKE '%sodium%'
         - "Get all slot 150 records" -> SELECT * FROM medical_data WHERE Slot = 150
-        """
         
-        user_prompt = f"Convert this natural language query to SQL: {natural_language_query}"
+        Convert this natural language query to SQL: {natural_language_query}"""
         
         try:
-            self._refresh_token_if_needed()
-            
-            response = self.openai_client.chat.completions.create(
-                model=self.deployment_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=500
-            )
-            
-            sql_query = response.choices[0].message.content.strip()
+            sql_response = self.query_azure_openai(system_prompt)
             
             # Clean up the SQL query (remove markdown formatting if present)
-            sql_query = re.sub(r'```sql\n?', '', sql_query)
+            sql_query = re.sub(r'```sql\n?', '', sql_response)
             sql_query = re.sub(r'```\n?', '', sql_query)
             sql_query = sql_query.strip()
             
@@ -272,54 +278,96 @@ class MedicalDataQueryProcessor:
             self.conn.close()
             logger.info("Database connection closed")
 
+def format_results_to_markdown(result: Dict[str, Any]) -> str:
+    """
+    Format query results to markdown format.
+    
+    Args:
+        result: Query result dictionary
+        
+    Returns:
+        Formatted markdown string
+    """
+    markdown_content = f"## Query: {result['natural_language_query']}\n\n"
+    
+    if result["success"]:
+        markdown_content += f"**Generated SQL:** `{result['generated_sql']}`\n\n"
+        markdown_content += f"**Results ({result['row_count']} rows):**\n\n"
+        
+        if result['row_count'] > 0:
+            # Convert DataFrame to markdown table
+            markdown_content += result['results'].to_markdown(index=False)
+            markdown_content += "\n\n"
+        else:
+            markdown_content += "No results found\n\n"
+    else:
+        markdown_content += f"**Error:** {result['error']}\n\n"
+    
+    markdown_content += "---\n\n"
+    return markdown_content
+
 def main():
     """Main function to demonstrate usage."""
-    # Configuration - replace with your Azure OpenAI details
-    AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "https://your-openai-resource.openai.azure.com/")
-    DEPLOYMENT_NAME = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4")
-    KEY_VAULT_URL = os.getenv("AZURE_KEY_VAULT_URL")  # Optional
-    CSV_FILE_PATH = "medical_data.csv"
+    CSV_FILE_PATH = "./data/medical_data.csv"
+    
+    # Generate random suffix for output file
+    random_suffix = random.randint(1000, 9999)
+    output_file = f"output_{random_suffix}.md"
+    
+    # Check if CSV file exists
+    if not os.path.exists(CSV_FILE_PATH):
+        logger.error(f"CSV file not found: {CSV_FILE_PATH}")
+        error_msg = f"Error: CSV file not found at {CSV_FILE_PATH}\nPlease ensure the medical data CSV file exists"
+        print(error_msg)
+        
+        # Create error file immediately
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(f"# Medical Data Query Results\n\n**Error:** {error_msg}\n")
+        print(f"Error details saved to {output_file}")
+        return
+    
+    # Initialize markdown content and create file immediately
+    initial_content = f"# Medical Data Query Results\n\n"
+    initial_content += f"Generated at: {pd.Timestamp.now()}\n\n"
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(initial_content)
+    
+    print(f"Medical Data Query Processor - Output will be saved to {output_file}")
+    print(f"Output file created: {output_file}")
+    print("=" * 50)
     
     # Initialize the processor
     try:
-        processor = MedicalDataQueryProcessor(
-            csv_file_path=CSV_FILE_PATH,
-            azure_openai_endpoint=AZURE_OPENAI_ENDPOINT,
-            deployment_name=DEPLOYMENT_NAME,
-            key_vault_url=KEY_VAULT_URL
-        )
+        processor = MedicalDataQueryProcessor(csv_file_path=CSV_FILE_PATH)
         
         # Example queries
         example_queries = [
             "Show me all records for MEDCode 1302",
-            "Find measurements containing 'sodium'",
+            "Find measurements containing 'sodium'", 
             "Get all records where the slot is 150",
             "Show me all measurement descriptions",
             "Find records with empty values"
         ]
         
-        print("Medical Data Query Processor")
-        print("=" * 50)
-        
         # Process example queries
         for query in example_queries:
-            print(f"\nQuery: {query}")
+            print(f"Processing: {query}")
             result = processor.process_natural_language_query(query)
             
-            if result["success"]:
-                print(f"Generated SQL: {result['generated_sql']}")
-                print(f"Results ({result['row_count']} rows):")
-                if result['row_count'] > 0:
-                    print(result['results'].to_string(index=False))
-                else:
-                    print("No results found")
-            else:
-                print(f"Error: {result['error']}")
+            # Append to file immediately
+            with open(output_file, 'a', encoding='utf-8') as f:
+                f.write(format_results_to_markdown(result))
             
-            print("-" * 50)
+            print(f"  → Added to {output_file}")
         
         # Interactive mode
         print("\nEntering interactive mode. Type 'quit' to exit.")
+        
+        # Add interactive section header
+        with open(output_file, 'a', encoding='utf-8') as f:
+            f.write("## Interactive Queries\n\n")
+        
         while True:
             user_query = input("\nEnter your query: ").strip()
             if user_query.lower() in ['quit', 'exit', 'q']:
@@ -328,19 +376,23 @@ def main():
             if user_query:
                 result = processor.process_natural_language_query(user_query)
                 
-                if result["success"]:
-                    print(f"Generated SQL: {result['generated_sql']}")
-                    print(f"Results ({result['row_count']} rows):")
-                    if result['row_count'] > 0:
-                        print(result['results'].to_string(index=False))
-                    else:
-                        print("No results found")
-                else:
-                    print(f"Error: {result['error']}")
+                # Append to file immediately
+                with open(output_file, 'a', encoding='utf-8') as f:
+                    f.write(format_results_to_markdown(result))
+                
+                print(f"Query processed and added to {output_file}")
+        
+        print(f"\nAll results have been saved to {output_file}")
         
     except Exception as e:
         logger.error(f"Application error: {e}")
         print(f"Error: {e}")
+        
+        # Append error to existing file
+        with open(output_file, 'a', encoding='utf-8') as f:
+            f.write(f"\n## Application Error\n\n**Error:** {e}\n")
+        
+        print(f"Error details appended to {output_file}")
     
     finally:
         if 'processor' in locals():
