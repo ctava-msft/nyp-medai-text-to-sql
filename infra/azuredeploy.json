@@ -1,0 +1,483 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.28.1.47646",
+      "templateHash": "7480269780041571611"
+    }
+  },
+  "parameters": {
+    "skipRoleAssignments": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Skip creating role assignments if they already exist"
+      }
+    },
+    "deploymentTimestamp": {
+      "type": "string",
+      "defaultValue": "[utcNow()]",
+      "metadata": {
+        "description": "Timestamp for the deployment to ensure unique role assignment names"
+      }
+    }
+  },
+  "variables": {
+    "deploymentTimestamp": "[parameters('deploymentTimestamp')]",
+    "aiServicesName": "[format('ais-{0}', variables('uniqueSuffix'))]",
+    "keyVaultName": "[format('kv-{0}', variables('uniqueSuffix'))]",
+    "location": "[resourceGroup().location]",
+    "searchServiceName": "[format('search-{0}', variables('uniqueSuffix'))]",
+    "storageAccountName": "[format('sa{0}', variables('uniqueSuffix'))]",
+    "storageContainerName": "[format('sc{0}', variables('uniqueSuffix'))]",
+    "tenantId": "[subscription().tenantId]",
+    "uniqueSuffix": "[substring(uniqueString(resourceGroup().id), 0, 5)]",
+    "workspaceName": "[format('w-{0}', variables('uniqueSuffix'))]",
+    "projectName": "[format('p-{0}', variables('uniqueSuffix'))]",
+    "azureOpenAIConnectionName": "[format('{0}-connection-AzureOpenAI', variables('workspaceName'))]",
+    "azureAISearchConnectionName": "[format('{0}-connection-AzureAISearch', variables('workspaceName'))]",
+    "gptDeploymentName": "gpt-4.1",
+    "roleDefinitions": {
+      "cognitiveServicesOpenAIContributor": "a001fd3d-188f-4b5d-821b-7da978bf7442",
+      "cognitiveServicesOpenAIUser": "5e0bd9bd-7b93-4f28-af87-19fc36ad61bd",
+      "cognitiveServicesContributor": "25fbc0a9-bd7c-42a3-aa1a-3b75d497ee68",
+      "contributor": "b24988ac-6180-42a0-ab88-20f7382dd24c",
+      "searchServicesContributor": "7ca78c08-252a-4471-8644-bb5ff32d4ba0",
+      "searchIndexDataContributor": "8ebe5a00-799e-43f5-93ac-243d3dce84a7",
+      "searchIndexDataReader": "1407120a-92aa-4202-b7e9-c0e197c71c8f",
+      "storageBlobDataContributor": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+      "storageFileDataPrivilegedContributor": "69566ab7-960f-475b-8e7c-b3118f30c6bd",
+      "azureMLDataScientist": "f6c7c914-8db3-469d-8ca1-694a8f32e121"
+    },
+    "deploymentSuffix": "[substring(replace(replace(variables('deploymentTimestamp'), ':', ''), '-', ''), 0, 8)]",
+    "roleAssignmentSuffix": "[concat(variables('uniqueSuffix'), variables('deploymentSuffix'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2021-04-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[variables('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "encryption": {
+          "services": {
+            "blob": {
+              "enabled": true
+            },
+            "file": {
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        },
+        "supportsHttpsTrafficOnly": true,
+        "publicNetworkAccess": "Enabled",
+        "allowBlobPublicAccess": true
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2019-06-01",
+      "name": "[concat(variables('storageAccountName'), '/default/', variables('storageContainerName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2019-09-01",
+      "name": "[variables('keyVaultName')]",
+      "location": "[variables('location')]",
+      "properties": {
+        "tenantId": "[variables('tenantId')]",
+        "sku": {
+          "name": "standard",
+          "family": "A"
+        },
+        "accessPolicies": [],
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.MachineLearningServices/workspaces",
+      "apiVersion": "2024-04-01-preview",
+      "name": "[variables('workspaceName')]",
+      "location": "[variables('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "kind": "hub",
+      "properties": {
+        "friendlyName": "[variables('workspaceName')]",
+        "keyVault": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "storageAccount": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "publicNetworkAccess": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Search/searchServices",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('searchServiceName')]",
+      "location": "[variables('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "sku": {
+        "name": "standard"
+      },
+      "properties": {
+        "replicaCount": 1,
+        "partitionCount": 1,
+        "hostingMode": "default",
+        "publicNetworkAccess": "enabled",
+        "encryptionWithCmk": {
+          "enforcement": "Unspecified"
+        },
+        "disableLocalAuth": false,
+        "authOptions": {
+          "aadOrApiKey": {
+            "aadAuthFailureMode": "http401WithBearerChallenge"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2021-10-01",
+      "name": "[variables('aiServicesName')]",
+      "location": "[variables('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "sku": {
+        "name": "S0"
+      },
+      "kind": "AIServices",
+      "properties": {
+        "customSubDomainName": "[variables('aiServicesName')]",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.MachineLearningServices/workspaces/connections",
+      "apiVersion": "2024-04-01-preview",
+      "name": "[format('{0}/{1}', variables('workspaceName'), variables('azureOpenAIConnectionName'))]",
+      "properties": {
+        "category": "AzureOpenAI",
+        "target": "[format('https://{0}.cognitiveservices.azure.com/', variables('aiServicesName'))]",
+        "authType": "AAD",
+        "isSharedToAll": true,
+        "metadata": {
+          "ApiType": "Azure",
+          "ResourceId": "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.MachineLearningServices/workspaces/connections",
+      "apiVersion": "2024-04-01-preview",
+      "name": "[format('{0}/{1}', variables('workspaceName'), variables('azureAISearchConnectionName'))]",
+      "properties": {
+        "category": "CognitiveSearch",
+        "target": "[format('https://{0}.search.windows.net/', variables('searchServiceName'))]",
+        "authType": "AAD",
+        "isSharedToAll": true,
+        "metadata": {
+          "ApiType": "Azure",
+          "ResourceId": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]",
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('searchServiceName'), '-aiservices-contributor-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').searchIndexDataContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName')), '2021-10-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('searchServiceName'), '-aiservices-reader-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').searchIndexDataReader)]",
+        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName')), '2021-10-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('searchServiceName'), '-aiservices-searchcontrib-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').searchServicesContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName')), '2021-10-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('aiServicesName'), '-search-contrib-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').cognitiveServicesContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), '2023-11-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('aiServicesName'), '-search-openai-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').cognitiveServicesOpenAIContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), '2023-11-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('storageAccountName'), '-search-blob-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').storageBlobDataContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.Search/searchServices', variables('searchServiceName')), '2023-11-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('storageAccountName'), '-aiservices-blob-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').storageBlobDataContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName')), '2021-10-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('storageAccountName'), '-workspace-blob-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').storageBlobDataContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName')), '2024-04-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('storageAccountName'), '-workspace-file-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').storageFileDataPrivilegedContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName')), '2024-04-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.MachineLearningServices/workspaces",
+      "apiVersion": "2024-04-01-preview",
+      "name": "[variables('projectName')]",
+      "location": "[variables('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "kind": "project",
+      "properties": {
+        "friendlyName": "[variables('projectName')]",
+        "hubResourceId": "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]",
+        "publicNetworkAccess": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('aiServicesName'), '-workspace-contrib-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').cognitiveServicesContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName')), '2024-04-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('aiServicesName'), '-workspace-openai-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').cognitiveServicesOpenAIContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName')), '2024-04-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('aiServicesName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('searchServiceName'), '-workspace-contrib-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').searchServicesContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName')), '2024-04-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]",
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('searchServiceName'), '-workspace-reader-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').searchIndexDataReader)]",
+        "principalId": "[reference(resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName')), '2024-04-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]",
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
+      ]
+    },
+    {
+      "condition": "[not(parameters('skipRoleAssignments'))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(concat(variables('searchServiceName'), '-workspace-datacontrib-', variables('roleAssignmentSuffix')))]",
+      "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitions').searchIndexDataContributor)]",
+        "principalId": "[reference(resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName')), '2024-04-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.MachineLearningServices/workspaces', variables('workspaceName'))]",
+        "[resourceId('Microsoft.Search/searchServices', variables('searchServiceName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "workspaceName": {
+      "type": "string",
+      "value": "[variables('workspaceName')]"
+    },
+    "projectName": {
+      "type": "string",
+      "value": "[variables('projectName')]"
+    },
+    "aiServicesName": {
+      "type": "string",
+      "value": "[variables('aiServicesName')]"
+    },
+    "searchServiceName": {
+      "type": "string",
+      "value": "[variables('searchServiceName')]"
+    },
+    "storageAccountName": {
+      "type": "string",
+      "value": "[variables('storageAccountName')]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[variables('keyVaultName')]"
+    },
+    "gptDeploymentName": {
+      "type": "string",
+      "value": "[variables('gptDeploymentName')]"
+    }
+  }
+}
